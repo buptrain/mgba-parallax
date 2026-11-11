@@ -5,6 +5,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "gba/renderers/software-private.h"
 
+#define CAPTURE_OBJ_CANDIDATE(COLOR) do { \
+	if (renderer->objCandidateBuffer && renderer->objCandidateCoverage && renderer->backgroundCandidateY >= 0) { \
+		size_t offset = (size_t)renderer->backgroundCandidateY * renderer->backgroundCandidateStride + outX; \
+		renderer->objCandidateBuffer[offset] = (COLOR); renderer->objCandidateCoverage[offset] = 255; \
+	} \
+} while (0)
+
 #define SPRITE_NORMAL_LOOP(DEPTH, TYPE) \
 	SPRITE_YBASE_ ## DEPTH(inY); \
 	unsigned tileData; \
@@ -79,6 +86,7 @@
 	current = renderer->spriteLayer[outX]; \
 	if ((current & FLAG_ORDER_MASK) > flags) { \
 		if (tileData) { \
+			CAPTURE_OBJ_CANDIDATE(palette[tileData]); \
 			renderer->spriteLayer[outX] = palette[tileData] | flags; \
 		} else if (current != FLAG_UNWRITTEN) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
@@ -92,6 +100,7 @@
 	if ((current & FLAG_ORDER_MASK) > flags) { \
 		if (tileData) { \
 			unsigned color = (renderer->row[outX] & FLAG_OBJWIN) ? objwinPalette[tileData] : palette[tileData]; \
+			CAPTURE_OBJ_CANDIDATE(color); \
 			renderer->spriteLayer[outX] = color | flags; \
 		} else if (current != FLAG_UNWRITTEN) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
@@ -119,6 +128,7 @@
 	current = renderer->spriteLayer[outX]; \
 	if ((current & FLAG_ORDER_MASK) > flags) { \
 		if (tileData) { \
+			CAPTURE_OBJ_CANDIDATE(palette[tileData]); \
 			renderer->spriteLayer[outX] = palette[tileData] | flags; \
 		} else if (current != FLAG_UNWRITTEN) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
@@ -132,6 +142,7 @@
 	if ((current & FLAG_ORDER_MASK) > flags) { \
 		if (tileData) { \
 			unsigned color = (renderer->row[outX] & FLAG_OBJWIN) ? objwinPalette[tileData] : palette[tileData]; \
+			CAPTURE_OBJ_CANDIDATE(color); \
 			renderer->spriteLayer[outX] = color | flags; \
 		} else if (current != FLAG_UNWRITTEN) { \
 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \

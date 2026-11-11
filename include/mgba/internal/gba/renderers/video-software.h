@@ -83,6 +83,17 @@ struct GBAVideoSoftwareRenderer {
 	struct GBAVideoRenderer d;
 
 	mColor* outputBuffer;
+	/* Optional caller-owned final-composition diagnostics. */
+	uint32_t* provenanceBuffer;
+	int provenanceStride;
+	/* Optional raw candidates, populated before a Mode 0 background is
+	 * composited. The caller owns these buffers and clears coverage per frame. */
+	mColor* backgroundCandidateBuffer[4];
+	uint8_t* backgroundCandidateCoverage[4];
+	mColor* objCandidateBuffer;
+	uint8_t* objCandidateCoverage;
+	int backgroundCandidateStride;
+	int backgroundCandidateY;
 	int outputBufferStride;
 
 	uint32_t* temporaryBuffer;
@@ -90,6 +101,9 @@ struct GBAVideoSoftwareRenderer {
 	GBARegisterDISPCNT dispcnt;
 
 	uint32_t row[GBA_VIDEO_HORIZONTAL_PIXELS];
+	/* Preserve final-source flags after row[] deliberately becomes a
+	 * non-writable compositing sentinel for same-priority losers. */
+	uint32_t provenanceRow[GBA_VIDEO_HORIZONTAL_PIXELS];
 	uint32_t spriteLayer[GBA_VIDEO_HORIZONTAL_PIXELS];
 	int32_t spriteCyclesRemaining;
 
@@ -154,6 +168,10 @@ struct GBAVideoSoftwareRenderer {
 };
 
 void GBAVideoSoftwareRendererCreate(struct GBAVideoSoftwareRenderer* renderer);
+void GBAVideoSoftwareRendererSetProvenanceBuffer(struct GBAVideoSoftwareRenderer* renderer, uint32_t* buffer, int stride);
+void GBAVideoSoftwareRendererSetBackgroundCandidateBuffer(struct GBAVideoSoftwareRenderer* renderer,
+		unsigned background, mColor* color, uint8_t* coverage, int stride);
+void GBAVideoSoftwareRendererSetObjCandidateBuffer(struct GBAVideoSoftwareRenderer* renderer, mColor* color, uint8_t* coverage, int stride);
 
 CXX_GUARD_START
 

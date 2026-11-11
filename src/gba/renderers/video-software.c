@@ -560,6 +560,7 @@ static void GBAVideoSoftwareRendererPrepareWindow(struct GBAVideoSoftwareRendere
 
 static void GBAVideoSoftwareRendererDrawScanline(struct GBAVideoRenderer* renderer, int y) {
 	struct GBAVideoSoftwareRenderer* softwareRenderer = (struct GBAVideoSoftwareRenderer*) renderer;
+	softwareRenderer->backgroundCandidateY = y;
 
 	if (y == GBA_VIDEO_VERTICAL_PIXELS - 1) {
 		softwareRenderer->nextY = 0;
@@ -568,6 +569,15 @@ static void GBAVideoSoftwareRendererDrawScanline(struct GBAVideoRenderer* render
 	}
 
 	bool dirty = softwareRenderer->scanlineDirty[y >> 5] & (1U << (y & 0x1F));
+	/* Raw candidate planes are a per-frame diagnostic snapshot. They cannot
+	 * inherit mGBA's cached output row because their masks would accumulate
+	 * pixels from an earlier ROM setup frame. */
+	if (softwareRenderer->backgroundCandidateBuffer[0] ||
+		softwareRenderer->backgroundCandidateBuffer[1] ||
+		softwareRenderer->backgroundCandidateBuffer[2] ||
+		softwareRenderer->backgroundCandidateBuffer[3]) {
+		dirty = true;
+	}
 	if (memcmp(softwareRenderer->nextIo, softwareRenderer->cache[y].io, sizeof(softwareRenderer->nextIo))) {
 		memcpy(softwareRenderer->cache[y].io, softwareRenderer->nextIo, sizeof(softwareRenderer->nextIo));
 		dirty = true;
@@ -675,6 +685,34 @@ static void GBAVideoSoftwareRendererDrawScanline(struct GBAVideoRenderer* render
 	}
 
 	GBAVideoSoftwareRendererPostprocessBuffer(softwareRenderer);
+
+	if (softwareRenderer->provenanceBuffer) {
+		int x;
+		int windowIndex = 0;
+		for (x = 0; x < GBA_VIDEO_HORIZONTAL_PIXELS; ++x) {
+			uint32_t pixel = softwareRenderer->provenanceRow[x];
+			uint32_t composedPixel = softwareRenderer->row[x];
+			uint32_t source = (pixel & FLAG_UNWRITTEN) == FLAG_UNWRITTEN ? 0 :
+				(pixel & FLAG_IS_BACKGROUND) ? 1 + ((pixel & FLAG_INDEX) >> OFFSET_INDEX) : 5;
+			uint32_t priority = (pixel & FLAG_PRIORITY) >> OFFSET_PRIORITY;
+			uint32_t windowFlags = 0;
+			while (windowIndex + 1 < softwareRenderer->nWindows && x >= softwareRenderer->windows[windowIndex].endX) {
+				++windowIndex;
+			}
+			/* With no WIN0/WIN1/OBJWIN regions mGBA uses one synthetic 0xFF
+			 * control window. It permits blending globally but is not a real
+			 * per-pixel window effect in the provenance contract. */
+			if (softwareRenderer->nWindows > 1 &&
+				GBAWindowControlIsBlendEnable(softwareRenderer->windows[windowIndex].control.packed)) {
+				windowFlags |= 1;
+			}
+			if (composedPixel & FLAG_OBJWIN) {
+				windowFlags |= 2;
+			}
+			softwareRenderer->provenanceBuffer[y * softwareRenderer->provenanceStride + x] =
+				source | (priority << 8) | ((uint32_t)softwareRenderer->blendEffect << 16) | (windowFlags << 24);
+		}
+	}
 
 	if (GBARegisterDISPCNTGetMode(softwareRenderer->dispcnt) != 0) {
 		if (softwareRenderer->bg[2].enabled == ENABLED_MAX) {
@@ -953,6 +991,11 @@ void GBAVideoSoftwareRendererPreprocessBuffer(struct GBAVideoSoftwareRenderer* s
 			softwareRenderer->row[x] = backdrop;
 		}
 	}
+	if (softwareRenderer->provenanceBuffer) {
+		for (x = 0; x < GBA_VIDEO_HORIZONTAL_PIXELS; ++x) {
+			softwareRenderer->provenanceRow[x] = softwareRenderer->row[x];
+		}
+	}
 
 	softwareRenderer->bg[0].highlight = softwareRenderer->d.highlightBG[0];
 	softwareRenderer->bg[1].highlight = softwareRenderer->d.highlightBG[1];
@@ -1114,4 +1157,25 @@ void _updateFlags(struct GBAVideoSoftwareRenderer* renderer, struct GBAVideoSoft
 	background->flags = flags;
 	background->objwinFlags = objwinFlags;
 	background->variant = background->target1 && GBAWindowControlIsBlendEnable(renderer->currentWindow.packed) && (renderer->blendEffect == BLEND_BRIGHTEN || renderer->blendEffect == BLEND_DARKEN);
+}
+
+void GBAVideoSoftwareRendererSetProvenanceBuffer(struct GBAVideoSoftwareRenderer* renderer, uint32_t* buffer, int stride) {
+	renderer->provenanceBuffer = buffer;
+	renderer->provenanceStride = stride;
+}
+
+void GBAVideoSoftwareRendererSetBackgroundCandidateBuffer(struct GBAVideoSoftwareRenderer* renderer,
+		unsigned background, mColor* color, uint8_t* coverage, int stride) {
+	if (background >= 4) {
+		return;
+	}
+	renderer->backgroundCandidateBuffer[background] = color;
+	renderer->backgroundCandidateCoverage[background] = coverage;
+	renderer->backgroundCandidateStride = stride;
+}
+
+void GBAVideoSoftwareRendererSetObjCandidateBuffer(struct GBAVideoSoftwareRenderer* renderer, mColor* color, uint8_t* coverage, int stride) {
+	renderer->objCandidateBuffer = color;
+	renderer->objCandidateCoverage = coverage;
+	renderer->backgroundCandidateStride = stride;
 }

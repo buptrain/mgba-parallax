@@ -1,0 +1,331 @@
+diff --git a/include/mgba/internal/gba/renderers/video-software.h b/include/mgba/internal/gba/renderers/video-software.h
+index ce91877..3ab117a 100644
+--- a/include/mgba/internal/gba/renderers/video-software.h
++++ b/include/mgba/internal/gba/renderers/video-software.h
+@@ -83,6 +83,17 @@ struct GBAVideoSoftwareRenderer {
+ 	struct GBAVideoRenderer d;
+ 
+ 	mColor* outputBuffer;
++	/* Optional caller-owned final-composition diagnostics. */
++	uint32_t* provenanceBuffer;
++	int provenanceStride;
++	/* Optional raw candidates, populated before a Mode 0 background is
++	 * composited. The caller owns these buffers and clears coverage per frame. */
++	mColor* backgroundCandidateBuffer[4];
++	uint8_t* backgroundCandidateCoverage[4];
++	mColor* objCandidateBuffer;
++	uint8_t* objCandidateCoverage;
++	int backgroundCandidateStride;
++	int backgroundCandidateY;
+ 	int outputBufferStride;
+ 
+ 	uint32_t* temporaryBuffer;
+@@ -90,6 +101,9 @@ struct GBAVideoSoftwareRenderer {
+ 	GBARegisterDISPCNT dispcnt;
+ 
+ 	uint32_t row[GBA_VIDEO_HORIZONTAL_PIXELS];
++	/* Preserve final-source flags after row[] deliberately becomes a
++	 * non-writable compositing sentinel for same-priority losers. */
++	uint32_t provenanceRow[GBA_VIDEO_HORIZONTAL_PIXELS];
+ 	uint32_t spriteLayer[GBA_VIDEO_HORIZONTAL_PIXELS];
+ 	int32_t spriteCyclesRemaining;
+ 
+@@ -154,6 +168,10 @@ struct GBAVideoSoftwareRenderer {
+ };
+ 
+ void GBAVideoSoftwareRendererCreate(struct GBAVideoSoftwareRenderer* renderer);
++void GBAVideoSoftwareRendererSetProvenanceBuffer(struct GBAVideoSoftwareRenderer* renderer, uint32_t* buffer, int stride);
++void GBAVideoSoftwareRendererSetBackgroundCandidateBuffer(struct GBAVideoSoftwareRenderer* renderer,
++		unsigned background, mColor* color, uint8_t* coverage, int stride);
++void GBAVideoSoftwareRendererSetObjCandidateBuffer(struct GBAVideoSoftwareRenderer* renderer, mColor* color, uint8_t* coverage, int stride);
+ 
+ CXX_GUARD_START
+ 
+diff --git a/src/gba/renderers/software-obj.c b/src/gba/renderers/software-obj.c
+index 186db38..15c854b 100644
+--- a/src/gba/renderers/software-obj.c
++++ b/src/gba/renderers/software-obj.c
+@@ -5,6 +5,13 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ #include "gba/renderers/software-private.h"
+ 
++#define CAPTURE_OBJ_CANDIDATE(COLOR) do { \
++	if (renderer->objCandidateBuffer && renderer->objCandidateCoverage && renderer->backgroundCandidateY >= 0) { \
++		size_t offset = (size_t)renderer->backgroundCandidateY * renderer->backgroundCandidateStride + outX; \
++		renderer->objCandidateBuffer[offset] = (COLOR); renderer->objCandidateCoverage[offset] = 255; \
++	} \
++} while (0)
++
+ #define SPRITE_NORMAL_LOOP(DEPTH, TYPE) \
+ 	SPRITE_YBASE_ ## DEPTH(inY); \
+ 	unsigned tileData; \
+@@ -79,6 +86,7 @@
+ 	current = renderer->spriteLayer[outX]; \
+ 	if ((current & FLAG_ORDER_MASK) > flags) { \
+ 		if (tileData) { \
++			CAPTURE_OBJ_CANDIDATE(palette[tileData]); \
+ 			renderer->spriteLayer[outX] = palette[tileData] | flags; \
+ 		} else if (current != FLAG_UNWRITTEN) { \
+ 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+@@ -92,6 +100,7 @@
+ 	if ((current & FLAG_ORDER_MASK) > flags) { \
+ 		if (tileData) { \
+ 			unsigned color = (renderer->row[outX] & FLAG_OBJWIN) ? objwinPalette[tileData] : palette[tileData]; \
++			CAPTURE_OBJ_CANDIDATE(color); \
+ 			renderer->spriteLayer[outX] = color | flags; \
+ 		} else if (current != FLAG_UNWRITTEN) { \
+ 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+@@ -119,6 +128,7 @@
+ 	current = renderer->spriteLayer[outX]; \
+ 	if ((current & FLAG_ORDER_MASK) > flags) { \
+ 		if (tileData) { \
++			CAPTURE_OBJ_CANDIDATE(palette[tileData]); \
+ 			renderer->spriteLayer[outX] = palette[tileData] | flags; \
+ 		} else if (current != FLAG_UNWRITTEN) { \
+ 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+@@ -132,6 +142,7 @@
+ 	if ((current & FLAG_ORDER_MASK) > flags) { \
+ 		if (tileData) { \
+ 			unsigned color = (renderer->row[outX] & FLAG_OBJWIN) ? objwinPalette[tileData] : palette[tileData]; \
++			CAPTURE_OBJ_CANDIDATE(color); \
+ 			renderer->spriteLayer[outX] = color | flags; \
+ 		} else if (current != FLAG_UNWRITTEN) { \
+ 			renderer->spriteLayer[outX] = (current & ~(FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)) | (flags & (FLAG_ORDER_MASK | FLAG_REBLEND | FLAG_TARGET_1)); \
+diff --git a/src/gba/renderers/software-private.h b/src/gba/renderers/software-private.h
+index 4f7e9f8..2c87db1 100644
+--- a/src/gba/renderers/software-private.h
++++ b/src/gba/renderers/software-private.h
+@@ -38,6 +38,31 @@ static inline unsigned _darken(unsigned color, int y);
+ // The lower the number, the higher the priority, and sprites take precedence over backgrounds
+ // We want to do special processing if the color pixel is target 1, however
+ 
++static inline void _trackProvenanceWinner(struct GBAVideoSoftwareRenderer* renderer,
++		uint32_t* pixel, uint32_t color) {
++	if (renderer->provenanceBuffer) {
++		renderer->provenanceRow[pixel - renderer->row] = color;
++	}
++}
++
++/* This records the uncomposited palette color, not the final winner. It is
++ * intentionally separate from provenance: callers must prove the candidate
++ * can reconstruct the resolved frame before treating it as a 3D layer. */
++static inline void _captureBackgroundCandidate(struct GBAVideoSoftwareRenderer* renderer,
++		struct GBAVideoSoftwareBackground* background, uint32_t* pixel, mColor color) {
++	ptrdiff_t backgroundIndex = background - renderer->bg;
++	if (backgroundIndex >= 0 && backgroundIndex < 4 &&
++		renderer->backgroundCandidateBuffer[backgroundIndex] &&
++		renderer->backgroundCandidateCoverage[backgroundIndex]) {
++		ptrdiff_t x = pixel - renderer->row;
++		if (x >= 0 && x < GBA_VIDEO_HORIZONTAL_PIXELS && renderer->backgroundCandidateY >= 0) {
++			size_t offset = (size_t)renderer->backgroundCandidateY * renderer->backgroundCandidateStride + x;
++			renderer->backgroundCandidateBuffer[backgroundIndex][offset] = color;
++			renderer->backgroundCandidateCoverage[backgroundIndex][offset] = 255;
++		}
++	}
++}
++
+ static inline void _compositeBlendObjwin(struct GBAVideoSoftwareRenderer* renderer, uint32_t* pixel, uint32_t color, uint32_t current) {
+ 	if (color >= current) {
+ 		if (current & FLAG_TARGET_1 && color & FLAG_TARGET_2) {
+@@ -47,6 +72,7 @@ static inline void _compositeBlendObjwin(struct GBAVideoSoftwareRenderer* render
+ 		}
+ 	} else {
+ 		color = (color & ~FLAG_TARGET_2) | (current & FLAG_OBJWIN);
++		_trackProvenanceWinner(renderer, pixel, color);
+ 	}
+ 	*pixel = color;
+ }
+@@ -60,15 +86,16 @@ static inline void _compositeBlendNoObjwin(struct GBAVideoSoftwareRenderer* rend
+ 		}
+ 	} else {
+ 		color = color & ~FLAG_TARGET_2;
++		_trackProvenanceWinner(renderer, pixel, color);
+ 	}
+ 	*pixel = color;
+ }
+ 
+ static inline void _compositeNoBlendObjwin(struct GBAVideoSoftwareRenderer* renderer, uint32_t* pixel, uint32_t color,
+                                            uint32_t current) {
+-	UNUSED(renderer);
+ 	if (color < current) {
+ 		color |= (current & FLAG_OBJWIN);
++		_trackProvenanceWinner(renderer, pixel, color);
+ 	} else {
+ 		color = current & (0x00FFFFFF | FLAG_REBLEND | FLAG_OBJWIN);
+ 	}
+@@ -77,9 +104,10 @@ static inline void _compositeNoBlendObjwin(struct GBAVideoSoftwareRenderer* rend
+ 
+ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* renderer, uint32_t* pixel, uint32_t color,
+                                              uint32_t current) {
+-	UNUSED(renderer);
+ 	if (color >= current) {
+ 		color = current & (0x00FFFFFF | FLAG_REBLEND | FLAG_OBJWIN);
++	} else {
++		_trackProvenanceWinner(renderer, pixel, color);
+ 	}
+ 	*pixel = color;
+ }
+@@ -96,7 +124,10 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
+ 		} else { \
+ 			color = palette[paletteData | pixelData]; \
+ 		} \
+-		_composite ## BLEND ## Objwin(renderer, &pixel[IDX], color | mergedFlags, current); \
++		_captureBackgroundCandidate(renderer, background, &pixel[IDX], color); \
++		if (IS_WRITABLE(current)) { \
++			_composite ## BLEND ## Objwin(renderer, &pixel[IDX], color | mergedFlags, current); \
++		} \
+ 	}
+ 
+ #define COMPOSITE_16_NO_OBJWIN(BLEND, IDX) \
+@@ -107,7 +138,10 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
+ 		} else { \
+ 			color = palette[paletteData | pixelData]; \
+ 		} \
+-		_composite ## BLEND ## NoObjwin(renderer, &pixel[IDX], color | flags, current); \
++		_captureBackgroundCandidate(renderer, background, &pixel[IDX], color); \
++		if (IS_WRITABLE(current)) { \
++			_composite ## BLEND ## NoObjwin(renderer, &pixel[IDX], color | flags, current); \
++		} \
+ 	}
+ 
+ #define COMPOSITE_256_OBJWIN(BLEND, IDX) \
+@@ -122,7 +156,10 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
+ 		} else { \
+ 			color = palette[pixelData]; \
+ 		} \
+-		_composite ## BLEND ## Objwin(renderer, &pixel[IDX], color | mergedFlags, current); \
++		_captureBackgroundCandidate(renderer, background, &pixel[IDX], color); \
++		if (IS_WRITABLE(current)) { \
++			_composite ## BLEND ## Objwin(renderer, &pixel[IDX], color | mergedFlags, current); \
++		} \
+ 	}
+ 
+ #define COMPOSITE_256_NO_OBJWIN(BLEND, IDX) \
+@@ -133,13 +170,16 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
+ 		} else { \
+ 			color = palette[pixelData]; \
+ 		} \
+-		_composite ## BLEND ## NoObjwin(renderer, &pixel[IDX], color | flags, current); \
++		_captureBackgroundCandidate(renderer, background, &pixel[IDX], color); \
++		if (IS_WRITABLE(current)) { \
++			_composite ## BLEND ## NoObjwin(renderer, &pixel[IDX], color | flags, current); \
++		} \
+ 	}
+ 
+ #define BACKGROUND_DRAW_PIXEL_16(BLEND, OBJWIN, IDX) \
+ 	pixelData = tileData & 0xF; \
+ 	current = pixel[IDX]; \
+-	if (pixelData && IS_WRITABLE(current)) { \
++	if (pixelData) { \
+ 		COMPOSITE_16_ ## OBJWIN (BLEND, IDX); \
+ 	} \
+ 	tileData >>= 4;
+@@ -147,7 +187,7 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
+ #define BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN, IDX) \
+ 	pixelData = tileData & 0xFF; \
+ 	current = pixel[IDX]; \
+-	if (pixelData && IS_WRITABLE(current)) { \
++	if (pixelData) { \
+ 		COMPOSITE_256_ ## OBJWIN (BLEND, IDX); \
+ 	} \
+ 	tileData >>= 8;
+diff --git a/src/gba/renderers/video-software.c b/src/gba/renderers/video-software.c
+index c5bc37b..e697229 100644
+--- a/src/gba/renderers/video-software.c
++++ b/src/gba/renderers/video-software.c
+@@ -560,6 +560,7 @@ static void GBAVideoSoftwareRendererPrepareWindow(struct GBAVideoSoftwareRendere
+ 
+ static void GBAVideoSoftwareRendererDrawScanline(struct GBAVideoRenderer* renderer, int y) {
+ 	struct GBAVideoSoftwareRenderer* softwareRenderer = (struct GBAVideoSoftwareRenderer*) renderer;
++	softwareRenderer->backgroundCandidateY = y;
+ 
+ 	if (y == GBA_VIDEO_VERTICAL_PIXELS - 1) {
+ 		softwareRenderer->nextY = 0;
+@@ -568,6 +569,15 @@ static void GBAVideoSoftwareRendererDrawScanline(struct GBAVideoRenderer* render
+ 	}
+ 
+ 	bool dirty = softwareRenderer->scanlineDirty[y >> 5] & (1U << (y & 0x1F));
++	/* Raw candidate planes are a per-frame diagnostic snapshot. They cannot
++	 * inherit mGBA's cached output row because their masks would accumulate
++	 * pixels from an earlier ROM setup frame. */
++	if (softwareRenderer->backgroundCandidateBuffer[0] ||
++		softwareRenderer->backgroundCandidateBuffer[1] ||
++		softwareRenderer->backgroundCandidateBuffer[2] ||
++		softwareRenderer->backgroundCandidateBuffer[3]) {
++		dirty = true;
++	}
+ 	if (memcmp(softwareRenderer->nextIo, softwareRenderer->cache[y].io, sizeof(softwareRenderer->nextIo))) {
+ 		memcpy(softwareRenderer->cache[y].io, softwareRenderer->nextIo, sizeof(softwareRenderer->nextIo));
+ 		dirty = true;
+@@ -676,6 +686,34 @@ static void GBAVideoSoftwareRendererDrawScanline(struct GBAVideoRenderer* render
+ 
+ 	GBAVideoSoftwareRendererPostprocessBuffer(softwareRenderer);
+ 
++	if (softwareRenderer->provenanceBuffer) {
++		int x;
++		int windowIndex = 0;
++		for (x = 0; x < GBA_VIDEO_HORIZONTAL_PIXELS; ++x) {
++			uint32_t pixel = softwareRenderer->provenanceRow[x];
++			uint32_t composedPixel = softwareRenderer->row[x];
++			uint32_t source = (pixel & FLAG_UNWRITTEN) == FLAG_UNWRITTEN ? 0 :
++				(pixel & FLAG_IS_BACKGROUND) ? 1 + ((pixel & FLAG_INDEX) >> OFFSET_INDEX) : 5;
++			uint32_t priority = (pixel & FLAG_PRIORITY) >> OFFSET_PRIORITY;
++			uint32_t windowFlags = 0;
++			while (windowIndex + 1 < softwareRenderer->nWindows && x >= softwareRenderer->windows[windowIndex].endX) {
++				++windowIndex;
++			}
++			/* With no WIN0/WIN1/OBJWIN regions mGBA uses one synthetic 0xFF
++			 * control window. It permits blending globally but is not a real
++			 * per-pixel window effect in the provenance contract. */
++			if (softwareRenderer->nWindows > 1 &&
++				GBAWindowControlIsBlendEnable(softwareRenderer->windows[windowIndex].control.packed)) {
++				windowFlags |= 1;
++			}
++			if (composedPixel & FLAG_OBJWIN) {
++				windowFlags |= 2;
++			}
++			softwareRenderer->provenanceBuffer[y * softwareRenderer->provenanceStride + x] =
++				source | (priority << 8) | ((uint32_t)softwareRenderer->blendEffect << 16) | (windowFlags << 24);
++		}
++	}
++
+ 	if (GBARegisterDISPCNTGetMode(softwareRenderer->dispcnt) != 0) {
+ 		if (softwareRenderer->bg[2].enabled == ENABLED_MAX) {
+ 			softwareRenderer->bg[2].sx += softwareRenderer->bg[2].dmx;
+@@ -953,6 +991,11 @@ void GBAVideoSoftwareRendererPreprocessBuffer(struct GBAVideoSoftwareRenderer* s
+ 			softwareRenderer->row[x] = backdrop;
+ 		}
+ 	}
++	if (softwareRenderer->provenanceBuffer) {
++		for (x = 0; x < GBA_VIDEO_HORIZONTAL_PIXELS; ++x) {
++			softwareRenderer->provenanceRow[x] = softwareRenderer->row[x];
++		}
++	}
+ 
+ 	softwareRenderer->bg[0].highlight = softwareRenderer->d.highlightBG[0];
+ 	softwareRenderer->bg[1].highlight = softwareRenderer->d.highlightBG[1];
+@@ -1115,3 +1158,24 @@ void _updateFlags(struct GBAVideoSoftwareRenderer* renderer, struct GBAVideoSoft
+ 	background->objwinFlags = objwinFlags;
+ 	background->variant = background->target1 && GBAWindowControlIsBlendEnable(renderer->currentWindow.packed) && (renderer->blendEffect == BLEND_BRIGHTEN || renderer->blendEffect == BLEND_DARKEN);
+ }
++
++void GBAVideoSoftwareRendererSetProvenanceBuffer(struct GBAVideoSoftwareRenderer* renderer, uint32_t* buffer, int stride) {
++	renderer->provenanceBuffer = buffer;
++	renderer->provenanceStride = stride;
++}
++
++void GBAVideoSoftwareRendererSetBackgroundCandidateBuffer(struct GBAVideoSoftwareRenderer* renderer,
++		unsigned background, mColor* color, uint8_t* coverage, int stride) {
++	if (background >= 4) {
++		return;
++	}
++	renderer->backgroundCandidateBuffer[background] = color;
++	renderer->backgroundCandidateCoverage[background] = coverage;
++	renderer->backgroundCandidateStride = stride;
++}
++
++void GBAVideoSoftwareRendererSetObjCandidateBuffer(struct GBAVideoSoftwareRenderer* renderer, mColor* color, uint8_t* coverage, int stride) {
++	renderer->objCandidateBuffer = color;
++	renderer->objCandidateCoverage = coverage;
++	renderer->backgroundCandidateStride = stride;
++}

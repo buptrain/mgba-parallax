@@ -1,0 +1,13 @@
+mGBA Parallax instrumentation notices
+====================================
+
+Upstream mGBA is Copyright (c) 2013-2026 Jeffrey Pfau and contributors and
+is distributed under the Mozilla Public License, version 2.0. See LICENSE.
+
+The Parallax-specific modifications and integration sources under parallax/
+are distributed under the Mozilla Public License, version 2.0. They are a
+separate integration layer, not an endorsement by the upstream mGBA project.
+
+No ROMs, BIOS images, save files, game assets, or game trademarks are
+distributed by this repository. Users are responsible for supplying content
+they are legally entitled to use.

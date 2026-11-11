@@ -1,3 +1,46 @@
+# mGBA Parallax
+
+> Independent mGBA fork for the Parallax Emu spatial-retro project. It adds
+> final-pixel provenance instrumentation and conservative layer-candidate
+> capture for GBA software-renderer research.
+
+This is not an official mGBA release and is not endorsed by the upstream mGBA
+project. It is based on upstream commit
+[`a67176cd3e6bf60a5016d7adc94357142dd12617`](https://github.com/mgba-emu/mgba/commit/a67176cd3e6bf60a5016d7adc94357142dd12617).
+
+## Parallax fork quick links
+
+- [Instrumentation design](docs/INSTRUMENTATION.md)
+- [Integration, build, and source-distribution boundary](PARALLAX.md)
+- [Compiled Android core releases](https://github.com/buptrain/mgba-parallax/releases)
+- [Release-package contract](parallax/release/README.md)
+
+### What this fork changes
+
+- Records the final GBA PPU composition winner as per-pixel provenance.
+- Captures selected raw candidates separately from final visible output, with
+  coverage metadata and recomposition validation requirements.
+- Provides a small C ABI adapter, frame lease bridge, deterministic fixtures,
+  audio handoff, state boundary, and an experimental libretro path under
+  `parallax/`.
+
+The instrumentation is intentionally conservative: visible-source partitions
+are not a claim that all GBA layers are independently depth-displaceable.
+Commercial ROMs, BIOS files, saves, game assets, and game trademarks are not
+part of this repository or its releases.
+
+### Upstream and license
+
+Upstream mGBA history is retained to make review and future synchronization
+practical. Parallax changes have not been submitted to upstream. This fork and
+its `parallax/` integration sources are distributed under MPL-2.0; see
+[`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Every compiled-core release names
+its exact source tag, upstream commit, ABI version, and SHA-256.
+
+---
+
+# Upstream mGBA README
+
 mGBA
 ====
 

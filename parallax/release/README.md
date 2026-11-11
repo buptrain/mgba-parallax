@@ -24,3 +24,13 @@ fixed-host, signature-verifying external-core loader required for direct
 runtime use of a downloaded artifact. Until that loader exists and is device
 validated, consumers must verify the manifest and SHA-256, then package the
 core into their own approved build.
+
+## Developer delivery manifest
+
+`developer-delivery.json` is the small manifest consumed by Parallax Emu's
+developer/sideload registry. It is deliberately separate from
+`core-manifest.json`: it adds the HTTPS release asset URL while retaining the
+release ZIP's SHA-256. Update and commit it with every release. It is a
+download-and-verify registry input only; the current Unity application records
+the archive as `DownloadedNotLoadable` and never loads or replaces a native
+bridge at runtime.

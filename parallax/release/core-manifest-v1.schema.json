@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Parallax Emu Core Manifest v1",
+  "type": "object",
+  "required": ["schema", "coreId", "version", "abiVersion", "platform", "artifact", "sha256", "source"],
+  "properties": {
+    "schema": { "const": "parallax.core.manifest/v1" },
+    "coreId": { "const": "mgba-parallax" },
+    "version": { "type": "string", "minLength": 1 },
+    "abiVersion": { "const": 3 },
+    "platform": { "const": "android-arm64-v8a" },
+    "artifact": { "const": "libgba_xr.so" },
+    "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "source": {
+      "type": "object",
+      "required": ["repository", "tag", "upstreamCommit"],
+      "properties": {
+        "repository": { "const": "https://github.com/buptrain/mgba-parallax" },
+        "tag": { "type": "string", "minLength": 1 },
+        "upstreamCommit": { "const": "a67176cd3e6bf60a5016d7adc94357142dd12617" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["requiresCoreHostApi", "googlePlayRuntimeDownloadAllowed"],
+      "properties": {
+        "requiresCoreHostApi": { "const": 1 },
+        "googlePlayRuntimeDownloadAllowed": { "const": false }
+      }
+    }
+  }
+}
